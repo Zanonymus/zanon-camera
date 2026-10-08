@@ -29,6 +29,11 @@ pub struct Camera {
     preview_reader: ImageReader,
     still_reader: ImageReader,
     pub rotation: Rotation,
+    active: (i32, i32, i32, i32),
+    pub max_zoom: f32,
+    pub has_flash: bool,
+    zoom: f32,
+    torch: bool,
 }
 
 unsafe impl Send for Camera {}
@@ -79,7 +84,7 @@ impl Camera {
             let mut list: *mut ACameraIdList = ptr::null_mut();
             ok(ACameraManager_getCameraIdList(mgr, &mut list), "getCameraIdList")?;
             let want_facing = if front { 0 } else { 1 };
-            let mut chosen: Option<(*const std::ffi::c_char, i32, Sizes)> = None;
+            let mut chosen: Option<(*const std::ffi::c_char, i32, Sizes, (i32, i32, i32, i32), f32, bool)> = None;
             for i in 0..(*list).numCameras as isize {
                 let id = *(*list).cameraIds.offset(i);
                 let mut meta: *mut ACameraMetadata = ptr::null_mut();
@@ -91,15 +96,24 @@ impl Camera {
                 let sizes = entry(meta, acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS).and_then(|e| {
                     pick_sizes(std::slice::from_raw_parts(e.data.i32_, e.count as usize))
                 });
+                let active = entry(meta, acamera_metadata_tag::ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE).map(|e| {
+                    let a = std::slice::from_raw_parts(e.data.i32_, 4);
+                    (a[0], a[1], a[2], a[3])
+                });
+                let max_zoom = entry(meta, acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+                    .map(|e| *e.data.f)
+                    .unwrap_or(1.0)
+                    .clamp(1.0, 10.0);
+                let has_flash = entry(meta, acamera_metadata_tag::ACAMERA_FLASH_INFO_AVAILABLE).map(|e| *e.data.u8_ == 1).unwrap_or(false);
                 ACameraMetadata_free(meta);
                 if facing == Some(want_facing) {
-                    if let Some(s) = sizes {
-                        chosen = Some((id, orientation, s));
+                    if let (Some(s), Some(active)) = (sizes, active) {
+                        chosen = Some((id, orientation, s, active, max_zoom, has_flash));
                         break;
                     }
                 }
             }
-            let (id, orientation, sizes) = chosen.ok_or("no suitable camera found")?;
+            let (id, orientation, sizes, active, max_zoom, has_flash) = chosen.ok_or("no suitable camera found")?;
 
             let mut device: *mut ACameraDevice = ptr::null_mut();
             let mut dcb = ACameraDevice_StateCallbacks {
@@ -173,7 +187,44 @@ impl Camera {
                 preview_reader,
                 still_reader,
                 rotation,
+                active,
+                max_zoom,
+                has_flash,
+                zoom: 1.0,
+                torch: false,
             })
+        }
+    }
+
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.zoom = zoom.clamp(1.0, self.max_zoom);
+        self.apply();
+    }
+
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    pub fn set_torch(&mut self, on: bool) {
+        if self.has_flash {
+            self.torch = on;
+            self.apply();
+        }
+    }
+
+    /// Pushes zoom (sensor crop region) and torch state to both requests and restarts the repeating preview.
+    fn apply(&mut self) {
+        let (l, t, w, h) = self.active;
+        let (cw, ch) = ((w as f32 / self.zoom) as i32, (h as f32 / self.zoom) as i32);
+        let crop = [l + (w - cw) / 2, t + (h - ch) / 2, cw, ch];
+        let flash: u8 = if self.torch { 2 } else { 0 };
+        unsafe {
+            for req in [self.preview_req, self.still_req] {
+                ACaptureRequest_setEntry_i32(req, acamera_metadata_tag::ACAMERA_SCALER_CROP_REGION.0, 4, crop.as_ptr());
+                ACaptureRequest_setEntry_u8(req, acamera_metadata_tag::ACAMERA_FLASH_MODE.0, 1, &flash);
+            }
+            let mut req = self.preview_req;
+            ACameraCaptureSession_setRepeatingRequest(self.session, ptr::null_mut(), 1, &mut req, ptr::null_mut());
         }
     }
 

@@ -15,13 +15,14 @@ export global Theme {
 }
 
 component TonalIconButton inherits Rectangle {
+    in property <image> icon: @image-url("icons/flip-camera.svg");
     callback clicked();
     width: 56px;
     height: 56px;
     border-radius: 28px;
     background: touch.pressed ? Theme.on-secondary-container.with-alpha(0.3) : Theme.secondary-container.with-alpha(0.85);
     Image {
-        source: @image-url("icons/flip-camera.svg");
+        source: root.icon;
         width: 24px;
         height: 24px;
         colorize: Theme.on-secondary-container;
@@ -54,6 +55,15 @@ export component MainWindow inherits Window {
     in property <string> status;
     in property <string> qr-text;
     in property <string> toast;
+    in property <image> last-photo;
+    in property <bool> flash-available;
+    in property <float> max-zoom: 1;
+    in-out property <float> zoom: 1;
+    in-out property <int> flash-mode: 0;
+    property <float> pinch-start: 1;
+    callback set-zoom(float);
+    callback set-flash(int);
+    callback open-gallery();
     callback shutter();
     callback flip();
     callback dismiss-qr();
@@ -67,6 +77,11 @@ export component MainWindow inherits Window {
         image-fit: contain;
         width: parent.width;
         height: parent.height;
+    }
+
+    ScaleRotateGestureHandler {
+        started => { root.pinch-start = root.zoom; }
+        updated => { root.set-zoom(max(1, min(root.max-zoom, root.pinch-start * self.scale))); }
     }
 
     if root.preview.width == 0: Text {
@@ -99,6 +114,65 @@ export component MainWindow inherits Window {
             y: 54px;
             clicked => { root.flip(); }
         }
+        // Last photo: opens in the gallery app
+        Rectangle {
+            x: 40px;
+            y: 54px;
+            width: 56px;
+            height: 56px;
+            border-radius: 16px;
+            background: Theme.secondary-container.with-alpha(0.6);
+            clip: true;
+            Image {
+                source: root.last-photo;
+                image-fit: cover;
+                width: parent.width;
+                height: parent.height;
+            }
+            TouchArea { clicked => { root.open-gallery(); } }
+        }
+        // Zoom presets
+        HorizontalLayout {
+            y: -8px;
+            height: 36px;
+            alignment: center;
+            spacing: 8px;
+            visible: root.max-zoom > 1;
+            for z in [1.0, 2.0, 5.0]: Rectangle {
+                visible: z <= root.max-zoom;
+                width: z <= root.max-zoom ? 52px : 0px;
+                height: 36px;
+                border-radius: 18px;
+                background: abs(root.zoom - z) < 0.05 ? Theme.primary-container : #00000066;
+                Text {
+                    text: z + "×";
+                    color: abs(root.zoom - z) < 0.05 ? Theme.on-primary-container : #ffffff;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+                TouchArea { clicked => { root.set-zoom(z); } }
+            }
+        }
+    }
+
+    // Top bar: flash mode
+    if root.flash-available: TonalIconButton {
+        x: 16px;
+        y: 24px;
+        icon: root.flash-mode == 0 ? @image-url("icons/flash-off.svg") : root.flash-mode == 1 ? @image-url("icons/flash-auto.svg") : root.flash-mode == 2 ? @image-url("icons/flash-on.svg") : @image-url("icons/torch.svg");
+        clicked => {
+            root.flash-mode = Math.mod(root.flash-mode + 1, 4);
+            root.set-flash(root.flash-mode);
+        }
+    }
+    if root.zoom > 1.05: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 32px;
+        width: 64px;
+        height: 32px;
+        border-radius: 16px;
+        background: #00000088;
+        Text { text: Math.round(root.zoom * 10) / 10 + "×"; color: #ffffff; font-size: 14px; }
     }
 
     // QR result card (Material tonal surface)

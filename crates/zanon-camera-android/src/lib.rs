@@ -12,6 +12,23 @@ use zanon_camera_ui::{rgb, MainWindow, Theme};
 enum Cmd {
     Shutter,
     Flip,
+    Zoom(f32),
+    Flash(i32),
+}
+
+/// Flash modes: 0 off, 1 auto, 2 on (fires with the photo), 3 torch (always lit).
+const FLASH_AUTO: i32 = 1;
+const FLASH_ON: i32 = 2;
+const FLASH_TORCH: i32 = 3;
+static LAST_URI: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn publish_caps(weak: &slint::Weak<MainWindow>, cam: &camera::Camera) {
+    let (max, flash) = (cam.max_zoom, cam.has_flash);
+    let _ = weak.upgrade_in_event_loop(move |ui| {
+        ui.set_max_zoom(max);
+        ui.set_zoom(1.0);
+        ui.set_flash_available(flash);
+    });
 }
 
 fn apply_material_you(ui: &MainWindow) {
@@ -51,6 +68,9 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
             return;
         }
     };
+    publish_caps(&weak, &cam);
+    let mut flash = 0;
+    let mut luma = 128u32;
     let mut counter = 0u32;
     let mut tick = 0u32;
     loop {
@@ -65,17 +85,42 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
                         return;
                     }
                 };
+                publish_caps(&weak, &cam);
+                cam.set_torch(flash == FLASH_TORCH);
+            }
+            Ok(Cmd::Zoom(z)) => {
+                cam.set_zoom(z);
+                let z = cam.zoom();
+                let _ = weak.upgrade_in_event_loop(move |ui| ui.set_zoom(z));
+            }
+            Ok(Cmd::Flash(mode)) => {
+                flash = mode;
+                cam.set_torch(flash == FLASH_TORCH);
             }
             Ok(Cmd::Shutter) => {
-                let saved = cam.request_still().is_ok()
-                    && cam
-                        .take_still()
-                        .and_then(|f| encode_jpeg(f, cam.rotation, 92).ok())
-                        .map(|jpeg| {
-                            counter += 1;
-                            jni_util::save_jpeg(&timestamp_free_name(counter), &jpeg)
-                        })
-                        .unwrap_or(false);
+                let fire = flash == FLASH_ON || (flash == FLASH_AUTO && luma < 70);
+                if fire {
+                    cam.set_torch(true);
+                    std::thread::sleep(Duration::from_millis(450));
+                }
+                let mut thumb = None;
+                let uri = cam.request_still().ok().and_then(|_| cam.take_still()).and_then(|f| {
+                    thumb = f.thumbnail(160).rotated(cam.rotation).ok();
+                    let jpeg = encode_jpeg(f, cam.rotation, 92).ok()?;
+                    counter += 1;
+                    jni_util::save_jpeg(&timestamp_free_name(counter), &jpeg)
+                });
+                if fire {
+                    cam.set_torch(flash == FLASH_TORCH);
+                }
+                let saved = uri.is_some();
+                if let Some(u) = uri {
+                    *LAST_URI.lock().unwrap() = Some(u);
+                }
+                if let Some(t) = thumb {
+                    let buf = SharedPixelBuffer::<zanon_camera_ui::Rgb8Pixel>::clone_from_slice(&t.rgb, t.width, t.height);
+                    let _ = weak.upgrade_in_event_loop(move |ui| ui.set_last_photo(slint::Image::from_rgb8(buf)));
+                }
                 let msg = if saved { "Saved to gallery" } else { "Could not save photo" };
                 let _ = weak.upgrade_in_event_loop(move |ui| ui.set_toast(msg.into()));
                 std::thread::sleep(Duration::from_millis(1400));
@@ -86,6 +131,10 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
         }
         if let Some(frame) = cam.preview_frame() {
             tick += 1;
+            if tick % 6 == 0 {
+                let g = frame.gray();
+                luma = (g.iter().step_by(37).map(|&v| v as u32).sum::<u32>() * 37 / g.len().max(1) as u32).min(255);
+            }
             let code = if tick % 6 == 0 {
                 Some(qr::scan_gray(frame.width as usize, frame.height as usize, &frame.gray()).into_iter().next().unwrap_or_default())
             } else {
@@ -114,11 +163,24 @@ fn android_main(app: slint::android::AndroidApp) {
     }
     let (tx, rx) = mpsc::channel();
     let tx2 = tx.clone();
+    let tx3 = tx.clone();
     ui.on_shutter(move || {
         let _ = tx.send(Cmd::Shutter);
     });
     ui.on_flip(move || {
         let _ = tx2.send(Cmd::Flip);
+    });
+    let (txz, txf) = (tx3.clone(), tx3);
+    ui.on_set_zoom(move |z| {
+        let _ = txz.send(Cmd::Zoom(z));
+    });
+    ui.on_set_flash(move |m| {
+        let _ = txf.send(Cmd::Flash(m));
+    });
+    ui.on_open_gallery(|| {
+        if let Some(u) = LAST_URI.lock().unwrap().clone() {
+            jni_util::open_in_gallery(&u, "image/jpeg");
+        }
     });
     let weak = ui.as_weak();
     ui.on_dismiss_qr(move || {

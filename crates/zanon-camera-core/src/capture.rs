@@ -194,6 +194,20 @@ impl Frame {
         Some(Frame { width: rgb.width(), height: rgb.height(), rgb: rgb.into_raw() })
     }
 
+    /// Cheap nearest-neighbour thumbnail whose longer side is at most `max` pixels.
+    pub fn thumbnail(&self, max: u32) -> Frame {
+        let step = (self.width.max(self.height) / max).max(1);
+        let (ow, oh) = (self.width / step, self.height / step);
+        let mut rgb = Vec::with_capacity((ow * oh * 3) as usize);
+        for y in 0..oh {
+            for x in 0..ow {
+                let i = (((y * step) * self.width + x * step) * 3) as usize;
+                rgb.extend_from_slice(&self.rgb[i..i + 3]);
+            }
+        }
+        Frame { width: ow, height: oh, rgb }
+    }
+
     /// 8-bit luma for QR scanning.
     pub fn gray(&self) -> Vec<u8> {
         self.rgb

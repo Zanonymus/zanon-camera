@@ -49,7 +49,7 @@ pub fn request_camera_permission() {
 
 /// Inserts a JPEG into the shared gallery (DCIM/Camera). Only name, mime type and folder are given:
 /// no location, no date taken.
-pub fn save_jpeg(name: &str, data: &[u8]) -> bool {
+pub fn save_jpeg(name: &str, data: &[u8]) -> Option<String> {
     with_env(|env, act| {
         let resolver = env.call_method(act, "getContentResolver", "()Landroid/content/ContentResolver;", &[])?.l()?;
         let values = env.new_object("android/content/ContentValues", "()V", &[])?;
@@ -75,7 +75,7 @@ pub fn save_jpeg(name: &str, data: &[u8]) -> bool {
             )?
             .l()?;
         if uri.is_null() {
-            return Ok(false);
+            return Ok(None);
         }
         let os = env
             .call_method(&resolver, "openOutputStream", "(Landroid/net/Uri;)Ljava/io/OutputStream;", &[JValue::Object(&uri)])?
@@ -83,9 +83,32 @@ pub fn save_jpeg(name: &str, data: &[u8]) -> bool {
         let bytes = env.byte_array_from_slice(data)?;
         env.call_method(&os, "write", "([B)V", &[JValue::Object(&bytes)])?;
         env.call_method(&os, "close", "()V", &[])?;
-        Ok(true)
+        let s = env.call_method(&uri, "toString", "()Ljava/lang/String;", &[])?.l()?;
+        let s: String = env.get_string(&s.into())?.into();
+        Ok(Some(s))
     })
-    .unwrap_or(false)
+    .flatten()
+}
+
+/// Opens a MediaStore item in the user's gallery app.
+pub fn open_in_gallery(uri: &str, mime: &str) {
+    with_env(|env, _app| {
+        let act = unsafe { JObject::from_raw(ACTIVITY.load(std::sync::atomic::Ordering::SeqCst).cast()) };
+        let (u, m, action) = (env.new_string(uri)?, env.new_string(mime)?, env.new_string("android.intent.action.VIEW")?);
+        let uri = env
+            .call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&u)])?
+            .l()?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
+        env.call_method(
+            &intent,
+            "setDataAndType",
+            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&uri), JValue::Object(&m)],
+        )?;
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(1)])?;
+        env.call_method(&act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+        Ok(())
+    });
 }
 
 pub fn is_dark() -> bool {
