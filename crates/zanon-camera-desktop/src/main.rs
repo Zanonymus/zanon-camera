@@ -1,35 +1,18 @@
 use slint::ComponentHandle;
 use zanon_camera_ui::MainWindow;
 
+mod camera;
+
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
 use slint::{Rgb8Pixel, SharedPixelBuffer};
-use v4l::buffer::Type;
-use v4l::io::mmap::Stream;
 use v4l::io::traits::CaptureStream;
-use v4l::video::Capture;
-use v4l::{Device, FourCC};
 use zanon_camera_core::capture::{encode_jpeg, Frame, Rotation};
 use zanon_camera_core::qr;
 
 type Latest = Arc<Mutex<Option<Frame>>>;
-
-fn open_camera() -> Result<(Device, FourCC, u32, u32), String> {
-    let dev = Device::new(0).map_err(|e| format!("no camera at /dev/video0: {e}"))?;
-    let mut fmt = dev.format().map_err(|e| e.to_string())?;
-    fmt.width = 1280;
-    fmt.height = 720;
-    for cc in [b"MJPG", b"YUYV"] {
-        fmt.fourcc = FourCC::new(cc);
-        if let Ok(got) = dev.set_format(&fmt) {
-            if got.fourcc == FourCC::new(cc) {
-                return Ok((dev, got.fourcc, got.width, got.height));
-            }
-        }
-    }
-    Err("camera offers neither MJPG nor YUYV".into())
-}
 
 fn next_path() -> PathBuf {
     let dir = std::env::var_os("XDG_PICTURES_DIR")
@@ -63,53 +46,80 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    let weak = ui.as_weak();
-    std::thread::spawn(move || {
-        let (dev, fourcc, w, h) = match open_camera() {
-            Ok(c) => c,
-            Err(msg) => {
-                let _ = weak.upgrade_in_event_loop(move |ui| ui.set_status(msg.into()));
-                return;
-            }
-        };
-        let mut stream = match Stream::with_buffers(&dev, Type::VideoCapture, 4) {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = weak.upgrade_in_event_loop(move |ui| ui.set_status(e.to_string().into()));
-                return;
-            }
-        };
-        let mut n = 0u32;
-        while let Ok((buf, meta)) = stream.next() {
-            let data = &buf[..meta.bytesused as usize];
-            let frame = if fourcc == FourCC::new(b"MJPG") {
-                Frame::from_mjpeg(data)
-            } else {
-                Frame::from_yuyv(w, h, data)
-            };
-            let Some(frame) = frame else { continue };
-            n += 1;
-            let code = if n % 5 == 0 {
-                qr::scan_gray(frame.width as usize, frame.height as usize, &frame.gray())
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let pixels = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(
-                &frame.rgb, frame.width, frame.height,
-            );
-            *latest.lock().unwrap() = Some(frame);
-            let scanned = n % 5 == 0;
-            let _ = weak.upgrade_in_event_loop(move |ui| {
-                ui.set_preview(slint::Image::from_rgb8(pixels));
-                if scanned {
-                    ui.set_qr_text(code.into());
-                }
-            });
-        }
+    let (flip_tx, flip_rx) = mpsc::channel();
+    ui.on_flip(move || {
+        let _ = flip_tx.send(());
     });
+    let weak = ui.as_weak();
+    std::thread::spawn(move || capture_loop(weak, latest, flip_rx));
 
     ui.run()
+}
+
+fn set_status(weak: &slint::Weak<MainWindow>, msg: String) {
+    eprintln!("{msg}");
+    let _ = weak.upgrade_in_event_loop(move |ui| ui.set_status(msg.into()));
+}
+
+fn capture_loop(weak: slint::Weak<MainWindow>, latest: Latest, flips: Receiver<()>) {
+    let mut log = Vec::new();
+    let mut usable = Vec::new();
+    for path in camera::candidates() {
+        match camera::try_open(&path) {
+            Ok(_) => usable.push(path),
+            Err(e) => log.push(e),
+        }
+    }
+    let mut idx = 0;
+    while !usable.is_empty() {
+        idx %= usable.len();
+        match stream(&usable[idx], &weak, &latest, &flips) {
+            Ok(()) => idx += 1,
+            Err(e) => {
+                log.push(format!("{}: {e}", usable[idx].display()));
+                usable.remove(idx);
+            }
+        }
+    }
+    let mut msg = String::from("No usable camera found.");
+    if camera::candidates().is_empty() {
+        msg.push_str("\nThere is no /dev/video* device.");
+    }
+    for l in &log {
+        msg.push('\n');
+        msg.push_str(l);
+    }
+    msg.push_str("\nIf access is denied, add your user to the \"video\" group.");
+    set_status(&weak, msg);
+}
+
+fn stream(path: &std::path::Path, weak: &slint::Weak<MainWindow>, latest: &Latest, flips: &Receiver<()>) -> Result<(), String> {
+    let opened = camera::try_open(path)?;
+    let mut stream = camera::open_stream(&opened)?;
+    while flips.try_recv().is_ok() {}
+    let mut n = 0u32;
+    loop {
+        let (buf, meta) = stream.next().map_err(|e| format!("capture failed ({e})"))?;
+        if flips.try_recv().is_ok() {
+            return Ok(());
+        }
+        let data = &buf[..(meta.bytesused as usize).min(buf.len())];
+        let Some(frame) = camera::decode(&opened, data) else { continue };
+        n += 1;
+        let scanned = n % 5 == 0;
+        let code = if scanned {
+            qr::scan_gray(frame.width as usize, frame.height as usize, &frame.gray()).into_iter().next().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let pixels = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(&frame.rgb, frame.width, frame.height);
+        *latest.lock().unwrap() = Some(frame);
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            ui.set_preview(slint::Image::from_rgb8(pixels));
+            ui.set_status("".into());
+            if scanned {
+                ui.set_qr_text(code.into());
+            }
+        });
+    }
 }

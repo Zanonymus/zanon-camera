@@ -20,6 +20,7 @@ extended-description = "Privacy-first camera. Photos are encoded straight from t
 section = "graphics"
 priority = "optional"
 depends = "$auto"
+recommends = "libxkbcommon-x11-0"
 assets = [
     ["target/release/zanon-camera-desktop", "usr/bin/zanon-camera", "755"],
     ["data/org.zanon.camera.desktop", "usr/share/applications/", "644"],

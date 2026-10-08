@@ -1,14 +1,17 @@
-// Material 3 colour roles. Platforms overwrite these at startup (Android: Material You dynamic colour).
+import { Palette } from "std-widgets.slint";
+
+// Material 3 colour roles. Defaults follow the OS light/dark scheme; Android overwrites them with Material You colours.
 export global Theme {
-    in-out property <color> primary: #6750a4;
-    in-out property <color> on-primary: #ffffff;
-    in-out property <color> primary-container: #eaddff;
-    in-out property <color> on-primary-container: #21005d;
-    in-out property <color> secondary-container: #e8def8;
-    in-out property <color> on-secondary-container: #1d192b;
-    in-out property <color> surface: #fef7ff;
-    in-out property <color> surface-container: #f3edf7;
-    in-out property <color> on-surface: #1d1b20;
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    in-out property <color> primary: dark ? #d0bcff : #6750a4;
+    in-out property <color> on-primary: dark ? #381e72 : #ffffff;
+    in-out property <color> primary-container: dark ? #4f378b : #eaddff;
+    in-out property <color> on-primary-container: dark ? #eaddff : #21005d;
+    in-out property <color> secondary-container: dark ? #4a4458 : #e8def8;
+    in-out property <color> on-secondary-container: dark ? #e8def8 : #1d192b;
+    in-out property <color> surface: dark ? #141218 : #fef7ff;
+    in-out property <color> surface-container: dark ? #211f26 : #f3edf7;
+    in-out property <color> on-surface: dark ? #e6e0e9 : #1d1b20;
 }
 
 component TonalIconButton inherits Rectangle {
@@ -17,15 +20,11 @@ component TonalIconButton inherits Rectangle {
     height: 56px;
     border-radius: 28px;
     background: touch.pressed ? Theme.on-secondary-container.with-alpha(0.3) : Theme.secondary-container.with-alpha(0.85);
-    Path {
+    Image {
+        source: @image-url("icons/flip-camera.svg");
         width: 24px;
         height: 24px;
-        viewbox-width: 24;
-        viewbox-height: 24;
-        stroke: Theme.on-secondary-container;
-        stroke-width: 2px;
-        fill: transparent;
-        commands: "M 5 11 A 7 7 0 0 1 17.5 6.8 M 19 13 A 7 7 0 0 1 6.5 17.2 M 17.8 3.5 L 17.5 7 L 14 6.8 M 6.2 20.5 L 6.5 17 L 10 17.2";
+        colorize: Theme.on-secondary-container;
     }
     touch := TouchArea { clicked => { root.clicked(); } }
 }
@@ -76,9 +75,11 @@ export component MainWindow inherits Window {
         font-size: 16px;
         horizontal-alignment: center;
         wrap: word-wrap;
+        vertical-alignment: center;
         width: parent.width - 64px;
+        height: parent.height;
         x: 32px;
-        y: parent.height / 2 - 20px;
+        y: 0px;
     }
 
     // Bottom controls
