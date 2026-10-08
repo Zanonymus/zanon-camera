@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/zanon-camera-core", "crates/zanon-camera-desktop"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
+slint-build = "1.18"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = "s"

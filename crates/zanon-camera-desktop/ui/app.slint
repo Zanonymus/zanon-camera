@@ -1,0 +1,7 @@
+export component MainWindow inherits Window {
+    in property <string> title-text;
+    title: title-text;
+    preferred-width: 480px;
+    preferred-height: 720px;
+    Text { text: title-text; horizontal-alignment: center; vertical-alignment: center; }
+}
