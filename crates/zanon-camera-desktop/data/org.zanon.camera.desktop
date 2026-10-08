@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Camera
+GenericName=Privacy camera
+Comment=Take photos and scan QR codes without leaving metadata
+Exec=zanon-camera
+Icon=org.zanon.camera
+Categories=Graphics;Photography;
+StartupWMClass=zanon-camera-desktop
+Keywords=camera;photo;qr;

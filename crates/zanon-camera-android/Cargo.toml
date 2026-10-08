@@ -1,0 +1,19 @@
+[package]
+name = "zanon-camera-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "zanon_camera"
+
+[dependencies]
+slint = { workspace = true, features = ["backend-android-activity-06", "renderer-femtovg"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
+jni = "0.21"
+ndk = { version = "0.9", features = ["api-level-29", "media"] }
+ndk-sys = "0.6"
+zanon-camera-core = { path = "../zanon-camera-core" }
+zanon-camera-ui = { path = "../zanon-camera-ui" }
+ndk-context = "0.1.1"

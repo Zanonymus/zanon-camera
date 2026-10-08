@@ -7,6 +7,21 @@ license.workspace = true
 [dependencies]
 zanon-camera-core = { path = "../zanon-camera-core" }
 zanon-camera-ui = { path = "../zanon-camera-ui" }
-slint.workspace = true
+slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
 v4l = "0.14.0"
 
+
+[package.metadata.deb]
+name = "zanon-camera"
+maintainer = "Zanonymus <noreply@users.noreply.github.com>"
+copyright = "Zanonymus contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = "Privacy-first camera. Photos are encoded straight from the sensor, so they never contain EXIF, GPS or timestamps. Scans QR codes."
+section = "graphics"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/zanon-camera-desktop", "usr/bin/zanon-camera", "755"],
+    ["data/org.zanon.camera.desktop", "usr/share/applications/", "644"],
+    ["data/org.zanon.camera.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+]

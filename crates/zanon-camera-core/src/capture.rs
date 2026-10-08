@@ -38,13 +38,8 @@ impl std::error::Error for Error {}
 /// Turns a raw frame into a JPEG with the rotation baked into the pixels. The file is built only
 /// from pixel data, so it never contains EXIF, GPS, XMP, ICC, thumbnails, comments or timestamps.
 pub fn encode_jpeg(frame: Frame, rotation: Rotation, quality: u8) -> Result<Vec<u8>, Error> {
-    let img = RgbImage::from_raw(frame.width, frame.height, frame.rgb).ok_or(Error::BadFrame)?;
-    let img = match rotation {
-        Rotation::None => img,
-        Rotation::Cw90 => imageops::rotate90(&img),
-        Rotation::Cw180 => imageops::rotate180(&img),
-        Rotation::Cw270 => imageops::rotate270(&img),
-    };
+    let img = frame.rotated(rotation)?;
+    let img = RgbImage::from_raw(img.width, img.height, img.rgb).ok_or(Error::BadFrame)?;
     let mut out = Vec::new();
     JpegEncoder::new_with_quality(&mut out, quality)
         .encode_image(&img)
@@ -108,6 +103,18 @@ mod tests {
     }
 
     #[test]
+    fn yuv420_with_strides() {
+        // 4x2 image, row stride 6 (padding), interleaved chroma with pixel stride 2
+        let y = [100u8; 12];
+        let uv = [128u8; 8];
+        let f = Frame::from_yuv420(4, 2, 1, &y, 6, &uv, &uv, 4, 2);
+        assert_eq!((f.width, f.height, f.rgb.len()), (4, 2, 24));
+        let small = Frame::from_yuv420(4, 2, 2, &y, 6, &uv, &uv, 4, 2);
+        assert_eq!((small.width, small.height), (2, 1));
+        assert!(f.rgb.iter().all(|&v| v == 100));
+    }
+
+    #[test]
     fn rejects_mismatched_frame() {
         let bad = Frame { width: 4, height: 4, rgb: vec![0; 5] };
         assert!(encode_jpeg(bad, Rotation::None, 90).is_err());
@@ -115,6 +122,53 @@ mod tests {
 }
 
 impl Frame {
+    /// Returns the frame with `rotation` applied to the pixels.
+    pub fn rotated(self, rotation: Rotation) -> Result<Frame, Error> {
+        if rotation == Rotation::None {
+            return Ok(self);
+        }
+        let img = RgbImage::from_raw(self.width, self.height, self.rgb).ok_or(Error::BadFrame)?;
+        let img = match rotation {
+            Rotation::None => img,
+            Rotation::Cw90 => imageops::rotate90(&img),
+            Rotation::Cw180 => imageops::rotate180(&img),
+            Rotation::Cw270 => imageops::rotate270(&img),
+        };
+        Ok(Frame { width: img.width(), height: img.height(), rgb: img.into_raw() })
+    }
+
+    /// Android YUV_420_888 planes (arbitrary strides) to RGB8, sampling every `step`-th pixel
+    /// so previews can be made cheaply.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_yuv420(
+        width: u32,
+        height: u32,
+        step: u32,
+        y: &[u8],
+        y_row_stride: usize,
+        u: &[u8],
+        v: &[u8],
+        uv_row_stride: usize,
+        uv_pixel_stride: usize,
+    ) -> Frame {
+        let (ow, oh) = (width / step, height / step);
+        let mut rgb = Vec::with_capacity((ow * oh * 3) as usize);
+        for oy in 0..oh {
+            let py = (oy * step) as usize;
+            for ox in 0..ow {
+                let px = (ox * step) as usize;
+                let yy = y[py * y_row_stride + px] as i32;
+                let ci = (py / 2) * uv_row_stride + (px / 2) * uv_pixel_stride;
+                let (cu, cv) = (u[ci] as i32 - 128, v[ci] as i32 - 128);
+                let c = |v: i32| v.clamp(0, 255) as u8;
+                rgb.push(c(yy + ((359 * cv) >> 8)));
+                rgb.push(c(yy - ((88 * cu + 183 * cv) >> 8)));
+                rgb.push(c(yy + ((454 * cu) >> 8)));
+            }
+        }
+        Frame { width: ow, height: oh, rgb }
+    }
+
     /// Packed YUYV (YUY2) 4:2:2 from a V4L2 webcam to RGB8.
     pub fn from_yuyv(width: u32, height: u32, yuyv: &[u8]) -> Option<Frame> {
         if yuyv.len() < (width * height * 2) as usize || width % 2 != 0 {
