@@ -5520,9 +5520,17 @@ name = "zanon-camera-desktop"
 version = "0.1.0"
 dependencies = [
  "slint",
- "slint-build",
  "v4l",
  "zanon-camera-core",
+ "zanon-camera-ui",
+]
+
+[[package]]
+name = "zanon-camera-ui"
+version = "0.1.0"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

@@ -3,12 +3,10 @@ name = "zanon-camera-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-build = "build.rs"
 
 [dependencies]
 zanon-camera-core = { path = "../zanon-camera-core" }
+zanon-camera-ui = { path = "../zanon-camera-ui" }
 slint.workspace = true
 v4l = "0.14.0"
 
-[build-dependencies]
-slint-build.workspace = true

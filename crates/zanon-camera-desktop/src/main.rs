@@ -1,4 +1,5 @@
-slint::include_modules!();
+use slint::ComponentHandle;
+use zanon_camera_ui::MainWindow;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

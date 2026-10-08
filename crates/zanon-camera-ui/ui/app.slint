@@ -1,0 +1,148 @@
+// Material 3 colour roles. Platforms overwrite these at startup (Android: Material You dynamic colour).
+export global Theme {
+    in-out property <color> primary: #6750a4;
+    in-out property <color> on-primary: #ffffff;
+    in-out property <color> primary-container: #eaddff;
+    in-out property <color> on-primary-container: #21005d;
+    in-out property <color> secondary-container: #e8def8;
+    in-out property <color> on-secondary-container: #1d192b;
+    in-out property <color> surface: #fef7ff;
+    in-out property <color> surface-container: #f3edf7;
+    in-out property <color> on-surface: #1d1b20;
+}
+
+component TonalIconButton inherits Rectangle {
+    callback clicked();
+    width: 56px;
+    height: 56px;
+    border-radius: 28px;
+    background: touch.pressed ? Theme.on-secondary-container.with-alpha(0.3) : Theme.secondary-container.with-alpha(0.85);
+    Path {
+        width: 24px;
+        height: 24px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: Theme.on-secondary-container;
+        stroke-width: 2px;
+        fill: transparent;
+        commands: "M 5 11 A 7 7 0 0 1 17.5 6.8 M 19 13 A 7 7 0 0 1 6.5 17.2 M 17.8 3.5 L 17.5 7 L 14 6.8 M 6.2 20.5 L 6.5 17 L 10 17.2";
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+component Shutter inherits Rectangle {
+    callback clicked();
+    width: 84px;
+    height: 84px;
+    border-radius: 42px;
+    border-width: 4px;
+    border-color: #ffffff;
+    background: transparent;
+    animate border-width { duration: 120ms; easing: ease-out; }
+    Rectangle {
+        width: touch.pressed ? 56px : 66px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: touch.pressed ? Theme.primary-container : #ffffff;
+        animate width { duration: 120ms; easing: ease-out; }
+        animate background { duration: 120ms; }
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component MainWindow inherits Window {
+    in property <image> preview;
+    in property <string> status;
+    in property <string> qr-text;
+    in property <string> toast;
+    callback shutter();
+    callback flip();
+    callback dismiss-qr();
+    title: "Camera";
+    preferred-width: 420px;
+    preferred-height: 800px;
+    background: #000000;
+
+    Image {
+        source: root.preview;
+        image-fit: contain;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    if root.preview.width == 0: Text {
+        text: root.status != "" ? root.status : "Starting camera…";
+        color: #ffffffcc;
+        font-size: 16px;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+        width: parent.width - 64px;
+        x: 32px;
+        y: parent.height / 2 - 20px;
+    }
+
+    // Bottom controls
+    Rectangle {
+        y: parent.height - self.height;
+        height: 168px;
+        width: parent.width;
+        background: @linear-gradient(180deg, #00000000 0%, #000000aa 100%);
+
+        Shutter {
+            x: (parent.width - self.width) / 2;
+            y: 40px;
+            clicked => { root.shutter(); }
+        }
+        TonalIconButton {
+            x: parent.width - self.width - 40px;
+            y: 54px;
+            clicked => { root.flip(); }
+        }
+    }
+
+    // QR result card (Material tonal surface)
+    if root.qr-text != "": Rectangle {
+        x: 16px;
+        y: 24px;
+        width: parent.width - 32px;
+        height: card.preferred-height + 24px;
+        border-radius: 20px;
+        background: Theme.surface-container;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #00000066;
+        card := VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+            Text {
+                text: "QR code";
+                color: Theme.primary;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.qr-text;
+                color: Theme.on-surface;
+                font-size: 16px;
+                wrap: word-wrap;
+            }
+        }
+        TouchArea { clicked => { root.dismiss-qr(); } }
+    }
+
+    // Saved confirmation
+    if root.toast != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 220px;
+        width: toast-text.preferred-width + 40px;
+        height: 44px;
+        border-radius: 22px;
+        background: Theme.primary-container;
+        toast-text := Text {
+            text: root.toast;
+            color: Theme.on-primary-container;
+            font-size: 14px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
