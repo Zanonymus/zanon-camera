@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ndk::media::image_reader::{AcquireResult, Image, ImageFormat, ImageReader};
 use ndk_sys::*;
-use zanon_camera_core::capture::{Frame, Rotation};
+use zanon_camera_core::capture::{yuv420_to_nv12, Frame, Nv12, Rotation};
 
 const YUV_420_888: i32 = 0x23;
 const MAX_STILL_PIXELS: i64 = 13_000_000;
@@ -30,6 +30,7 @@ pub struct Camera {
     still_reader: ImageReader,
     pub rotation: Rotation,
     active: (i32, i32, i32, i32),
+    sizes: Sizes,
     pub max_zoom: f32,
     pub has_flash: bool,
     zoom: f32,
@@ -187,6 +188,7 @@ impl Camera {
                 preview_reader,
                 still_reader,
                 rotation,
+                sizes,
                 active,
                 max_zoom,
                 has_flash,
@@ -194,6 +196,13 @@ impl Camera {
                 torch: false,
             })
         }
+    }
+
+    /// Video frame size after rotation and 16-pixel alignment.
+    pub fn video_size(&self) -> (u32, u32) {
+        let (w, h) = (self.sizes.preview.0 as u32, self.sizes.preview.1 as u32);
+        let (w, h) = if matches!(self.rotation, Rotation::Cw90 | Rotation::Cw270) { (h, w) } else { (w, h) };
+        (w & !15, h & !15)
     }
 
     pub fn set_zoom(&mut self, zoom: f32) {
@@ -229,10 +238,27 @@ impl Camera {
     }
 
     /// Latest preview frame, downsampled to roughly 640 px wide and rotated upright.
-    pub fn preview_frame(&self) -> Option<Frame> {
+    pub fn preview_frame(&self, want_video: bool) -> Option<(Frame, Option<(Nv12, i64)>)> {
         let AcquireResult::Image(img) = self.preview_reader.acquire_latest_image().ok()? else { return None };
-        let f = yuv_to_frame(&img, 2)?;
-        f.rotated(self.rotation).ok()
+        let f = yuv_to_frame(&img, 2)?.rotated(self.rotation).ok()?;
+        let video = if want_video {
+            let (w, h) = (img.width().ok()? as u32, img.height().ok()? as u32);
+            let nv = yuv420_to_nv12(
+                w,
+                h,
+                img.plane_data(0).ok()?,
+                img.plane_row_stride(0).ok()? as usize,
+                img.plane_data(1).ok()?,
+                img.plane_data(2).ok()?,
+                img.plane_row_stride(1).ok()? as usize,
+                img.plane_pixel_stride(1).ok()? as usize,
+                self.rotation,
+            );
+            Some((nv, img.timestamp().ok()?))
+        } else {
+            None
+        };
+        Some((f, video))
     }
 
     pub fn request_still(&self) -> Result<(), String> {

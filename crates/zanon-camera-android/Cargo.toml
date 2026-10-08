@@ -12,7 +12,7 @@ name = "zanon_camera"
 slint = { workspace = true, features = ["backend-android-activity-06", "renderer-femtovg"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
 jni = "0.21"
-ndk = { version = "0.9", features = ["api-level-29", "media"] }
+ndk = { version = "0.9", features = ["api-level-29", "media", "audio"] }
 ndk-sys = "0.6"
 zanon-camera-core = { path = "../zanon-camera-core" }
 zanon-camera-ui = { path = "../zanon-camera-ui" }

@@ -126,14 +126,14 @@ impl<W: Write + Seek> Mp4Writer<W> {
     }
 
     fn moov(&self) -> Vec<u8> {
-        let dur = self.tracks.iter().map(Self::track_duration_ms).max().unwrap_or(0) as u32;
+        let dur = self.tracks.iter().filter(|t| !t.samples.is_empty()).map(Self::track_duration_ms).max().unwrap_or(0) as u32;
         let mvhd = full(
             b"mvhd",
             0,
             &cat(&[u32s(&[0, 0, 1000, dur]), u32s(&[0x10000]), vec![1, 0], vec![0; 10], u32s(&MATRIX), vec![0; 24], u32s(&[self.tracks.len() as u32 + 1])]),
         );
         let mut parts = vec![mvhd];
-        for (i, t) in self.tracks.iter().enumerate() {
+        for (i, t) in self.tracks.iter().enumerate().filter(|(_, t)| !t.samples.is_empty()) {
             parts.push(self.trak(i as u32 + 1, t));
         }
         boxed(b"moov", &cat(&parts))

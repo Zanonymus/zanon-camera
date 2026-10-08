@@ -115,10 +115,82 @@ mod tests {
     }
 
     #[test]
+    fn nv12_rotation_and_alignment() {
+        // 32x16 image whose luma encodes x; rotated 90 cw it becomes 16x32 with luma = 31 - y... check corners
+        let (w, h) = (32u32, 16u32);
+        let y: Vec<u8> = (0..h).flat_map(|_| 0..w as u8).collect();
+        let c = vec![128u8; (w * h / 4) as usize];
+        let n = yuv420_to_nv12(w, h, &y, w as usize, &c, &c, (w / 2) as usize, 1, Rotation::Cw90);
+        assert_eq!((n.width, n.height), (16, 32));
+        assert_eq!(n.data.len(), 16 * 32 * 3 / 2);
+        // output (ox,oy) <- src (oy, h-1-ox): luma value = x = oy
+        assert_eq!(n.data[0], 0);
+        assert_eq!(n.data[5 * 16 + 3], 5);
+        let n = yuv420_to_nv12(w, h, &y, w as usize, &c, &c, (w / 2) as usize, 1, Rotation::None);
+        assert_eq!(n.data[31], 31);
+        let n = yuv420_to_nv12(40, 20, &[0; 800], 40, &[0; 200], &[0; 200], 20, 1, Rotation::None);
+        assert_eq!((n.width, n.height), (32, 16));
+    }
+
+    #[test]
     fn rejects_mismatched_frame() {
         let bad = Frame { width: 4, height: 4, rgb: vec![0; 5] };
         assert!(encode_jpeg(bad, Rotation::None, 90).is_err());
     }
+}
+
+/// Upright NV12 (Y plane then interleaved UV) for a video encoder.
+pub struct Nv12 {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+
+/// Android YUV_420_888 planes to NV12 with `rotation` applied to the pixels, cropped so both sides
+/// are multiples of 16 (hardware encoders need aligned buffers).
+#[allow(clippy::too_many_arguments)]
+pub fn yuv420_to_nv12(
+    width: u32,
+    height: u32,
+    y: &[u8],
+    y_stride: usize,
+    u: &[u8],
+    v: &[u8],
+    uv_stride: usize,
+    uv_pixel_stride: usize,
+    rotation: Rotation,
+) -> Nv12 {
+    let (rw, rh) = match rotation {
+        Rotation::Cw90 | Rotation::Cw270 => (height, width),
+        _ => (width, height),
+    };
+    let (ow, oh) = (rw & !15, rh & !15);
+    // source coordinate for an output coordinate in a plane of size (w, h)
+    let src = |ox: u32, oy: u32, w: u32, h: u32| -> (usize, usize) {
+        match rotation {
+            Rotation::None => (ox as usize, oy as usize),
+            Rotation::Cw90 => (oy as usize, (h - 1 - ox) as usize),
+            Rotation::Cw180 => ((w - 1 - ox) as usize, (h - 1 - oy) as usize),
+            Rotation::Cw270 => ((w - 1 - oy) as usize, ox as usize),
+        }
+    };
+    let mut data = Vec::with_capacity((ow * oh * 3 / 2) as usize);
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let (sx, sy) = src(ox, oy, width, height);
+            data.push(y[sy * y_stride + sx]);
+        }
+    }
+    let (cw, ch) = (width / 2, height / 2);
+    for oy in 0..oh / 2 {
+        for ox in 0..ow / 2 {
+            let (sx, sy) = src(ox, oy, cw, ch);
+            let i = sy * uv_stride + sx * uv_pixel_stride;
+            data.push(u[i]);
+            data.push(v[i]);
+        }
+    }
+    Nv12 { width: ow, height: oh, data }
 }
 
 impl Frame {

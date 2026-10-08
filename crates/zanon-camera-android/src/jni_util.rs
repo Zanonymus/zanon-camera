@@ -26,11 +26,16 @@ pub fn set_activity(ptr: *mut std::ffi::c_void) {
     ACTIVITY.store(ptr, std::sync::atomic::Ordering::SeqCst);
 }
 
-const CAMERA: &str = "android.permission.CAMERA";
+pub const CAMERA: &str = "android.permission.CAMERA";
+pub const MICROPHONE: &str = "android.permission.RECORD_AUDIO";
 
 pub fn has_camera_permission() -> bool {
+    has_permission(CAMERA)
+}
+
+pub fn has_permission(name: &str) -> bool {
     with_env(|env, act| {
-        let p = env.new_string(CAMERA)?;
+        let p = env.new_string(name)?;
         env.call_method(act, "checkSelfPermission", "(Ljava/lang/String;)I", &[JValue::Object(&p)])?.i()
     })
     .map(|r| r == 0)
@@ -38,10 +43,14 @@ pub fn has_camera_permission() -> bool {
 }
 
 pub fn request_camera_permission() {
+    request_permission(CAMERA)
+}
+
+pub fn request_permission(name: &str) {
     with_env(|env, _app| {
         let act = unsafe { JObject::from_raw(ACTIVITY.load(std::sync::atomic::Ordering::SeqCst).cast()) };
         let act = &act;
-        let arr = env.new_object_array(1, "java/lang/String", env.new_string(CAMERA)?)?;
+        let arr = env.new_object_array(1, "java/lang/String", env.new_string(name)?)?;
         env.call_method(act, "requestPermissions", "([Ljava/lang/String;I)V", &[JValue::Object(&arr), JValue::Int(1)])?;
         Ok(())
     });
@@ -143,4 +152,89 @@ pub fn system_color(name: &str) -> Option<u32> {
         Ok(Some(c as u32 & 0x00ff_ffff))
     })
     .flatten()
+}
+
+/// Creates a pending DCIM/Camera video entry (name, mime type and folder only) and returns its URI
+/// and a writable file descriptor that the caller owns.
+pub fn create_video(name: &str) -> Option<(String, i32)> {
+    with_env(|env, act| {
+        let resolver = env.call_method(act, "getContentResolver", "()Landroid/content/ContentResolver;", &[])?.l()?;
+        let values = env.new_object("android/content/ContentValues", "()V", &[])?;
+        for (k, v) in [("_display_name", name), ("mime_type", "video/mp4"), ("relative_path", "DCIM/Camera")] {
+            let (k, v) = (env.new_string(k)?, env.new_string(v)?);
+            env.call_method(&values, "put", "(Ljava/lang/String;Ljava/lang/String;)V", &[JValue::Object(&k), JValue::Object(&v)])?;
+        }
+        let k = env.new_string("is_pending")?;
+        let one = env.call_static_method("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", &[JValue::Int(1)])?.l()?;
+        env.call_method(&values, "put", "(Ljava/lang/String;Ljava/lang/Integer;)V", &[JValue::Object(&k), JValue::Object(&one)])?;
+        let url = env.new_string("content://media/external/video/media")?;
+        let base = env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&url)])?.l()?;
+        let uri = env
+            .call_method(
+                &resolver,
+                "insert",
+                "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;",
+                &[JValue::Object(&base), JValue::Object(&values)],
+            )?
+            .l()?;
+        if uri.is_null() {
+            return Ok(None);
+        }
+        let mode = env.new_string("rw")?;
+        let pfd = env
+            .call_method(
+                &resolver,
+                "openFileDescriptor",
+                "(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;",
+                &[JValue::Object(&uri), JValue::Object(&mode)],
+            )?
+            .l()?;
+        let fd = env.call_method(&pfd, "detachFd", "()I", &[])?.i()?;
+        let s = env.call_method(&uri, "toString", "()Ljava/lang/String;", &[])?.l()?;
+        let s: String = env.get_string(&s.into())?.into();
+        Ok(Some((s, fd)))
+    })
+    .flatten()
+}
+
+/// Makes a pending entry visible in the gallery, or deletes it if the recording failed.
+pub fn finish_video(uri: &str, keep: bool) {
+    with_env(|env, act| {
+        let resolver = env.call_method(act, "getContentResolver", "()Landroid/content/ContentResolver;", &[])?.l()?;
+        let u = env.new_string(uri)?;
+        let uri = env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&u)])?.l()?;
+        let null = JObject::null();
+        if keep {
+            let values = env.new_object("android/content/ContentValues", "()V", &[])?;
+            let k = env.new_string("is_pending")?;
+            let zero = env.call_static_method("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", &[JValue::Int(0)])?.l()?;
+            env.call_method(&values, "put", "(Ljava/lang/String;Ljava/lang/Integer;)V", &[JValue::Object(&k), JValue::Object(&zero)])?;
+            env.call_method(
+                &resolver,
+                "update",
+                "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
+                &[JValue::Object(&uri), JValue::Object(&values), JValue::Object(&null), JValue::Object(&null)],
+            )?;
+        } else {
+            env.call_method(
+                &resolver,
+                "delete",
+                "(Landroid/net/Uri;Ljava/lang/String;[Ljava/lang/String;)I",
+                &[JValue::Object(&uri), JValue::Object(&null), JValue::Object(&null)],
+            )?;
+        }
+        Ok(())
+    });
+}
+
+#[link(name = "log")]
+extern "C" {
+    fn __android_log_write(prio: i32, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> i32;
+}
+
+/// Writes a line to logcat under the tag `zanon`.
+pub fn log(msg: &str) {
+    if let Ok(text) = std::ffi::CString::new(msg) {
+        unsafe { __android_log_write(4, c"zanon".as_ptr(), text.as_ptr()) };
+    }
 }

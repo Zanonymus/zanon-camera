@@ -31,6 +31,8 @@ component TonalIconButton inherits Rectangle {
 }
 
 component Shutter inherits Rectangle {
+    in property <bool> video;
+    in property <bool> recording;
     callback clicked();
     width: 84px;
     height: 84px;
@@ -40,10 +42,11 @@ component Shutter inherits Rectangle {
     background: transparent;
     animate border-width { duration: 120ms; easing: ease-out; }
     Rectangle {
-        width: touch.pressed ? 56px : 66px;
+        width: root.recording ? 34px : touch.pressed ? 56px : 66px;
         height: self.width;
-        border-radius: self.width / 2;
-        background: touch.pressed ? Theme.primary-container : #ffffff;
+        border-radius: root.recording ? 8px : self.width / 2;
+        background: root.recording ? #e53935 : root.video ? (touch.pressed ? #b71c1c : #e53935) : touch.pressed ? Theme.primary-container : #ffffff;
+        animate border-radius { duration: 150ms; }
         animate width { duration: 120ms; easing: ease-out; }
         animate background { duration: 120ms; }
     }
@@ -56,6 +59,10 @@ export component MainWindow inherits Window {
     in property <string> qr-text;
     in property <string> toast;
     in property <image> last-photo;
+    in-out property <bool> video-mode: false;
+    in property <bool> recording: false;
+    in property <string> rec-time;
+    callback toggle-record();
     in property <bool> flash-available;
     in property <float> max-zoom: 1;
     in-out property <float> zoom: 1;
@@ -100,14 +107,33 @@ export component MainWindow inherits Window {
     // Bottom controls
     Rectangle {
         y: parent.height - self.height;
-        height: 168px;
+        height: 200px;
         width: parent.width;
         background: @linear-gradient(180deg, #00000000 0%, #000000aa 100%);
 
         Shutter {
             x: (parent.width - self.width) / 2;
             y: 40px;
-            clicked => { root.shutter(); }
+            video: root.video-mode;
+            recording: root.recording;
+            clicked => {
+                if (root.video-mode) { root.toggle-record(); } else { root.shutter(); }
+            }
+        }
+        // Photo / Video mode switch
+        if !root.recording: HorizontalLayout {
+            y: 138px;
+            height: 32px;
+            alignment: center;
+            spacing: 24px;
+            for m[i] in ["PHOTO", "VIDEO"]: Text {
+                text: m;
+                color: (i == 1) == root.video-mode ? #ffffff : #ffffff99;
+                font-size: 13px;
+                font-weight: 700;
+                vertical-alignment: center;
+                TouchArea { clicked => { root.video-mode = (i == 1); } }
+            }
         }
         TonalIconButton {
             x: parent.width - self.width - 40px;
@@ -133,7 +159,7 @@ export component MainWindow inherits Window {
         }
         // Zoom presets
         HorizontalLayout {
-            y: -8px;
+            y: -48px;
             height: 36px;
             alignment: center;
             spacing: 8px;
@@ -156,6 +182,16 @@ export component MainWindow inherits Window {
     }
 
     // Top bar: flash mode
+    if root.recording: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 28px;
+        width: 92px;
+        height: 36px;
+        border-radius: 18px;
+        background: #000000aa;
+        Rectangle { x: 14px; y: 13px; width: 10px; height: 10px; border-radius: 5px; background: #e53935; }
+        Text { x: 30px; text: root.rec-time; color: #ffffff; font-size: 15px; font-weight: 600; vertical-alignment: center; height: parent.height; }
+    }
     if root.flash-available: TonalIconButton {
         x: 16px;
         y: 24px;
@@ -165,7 +201,7 @@ export component MainWindow inherits Window {
             root.set-flash(root.flash-mode);
         }
     }
-    if root.zoom > 1.05: Rectangle {
+    if root.zoom > 1.05 && !root.recording: Rectangle {
         x: (parent.width - self.width) / 2;
         y: 32px;
         width: 64px;
@@ -207,7 +243,7 @@ export component MainWindow inherits Window {
     // Saved confirmation
     if root.toast != "": Rectangle {
         x: (parent.width - self.width) / 2;
-        y: parent.height - 220px;
+        y: parent.height - 250px;
         width: toast-text.preferred-width + 40px;
         height: 44px;
         border-radius: 22px;

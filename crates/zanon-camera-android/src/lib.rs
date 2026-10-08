@@ -1,5 +1,6 @@
 mod camera;
 mod jni_util;
+mod recorder;
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -14,13 +15,14 @@ enum Cmd {
     Flip,
     Zoom(f32),
     Flash(i32),
+    ToggleRecord,
 }
 
 /// Flash modes: 0 off, 1 auto, 2 on (fires with the photo), 3 torch (always lit).
 const FLASH_AUTO: i32 = 1;
 const FLASH_ON: i32 = 2;
 const FLASH_TORCH: i32 = 3;
-static LAST_URI: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static LAST_URI: std::sync::Mutex<Option<(String, &'static str)>> = std::sync::Mutex::new(None);
 
 fn publish_caps(weak: &slint::Weak<MainWindow>, cam: &camera::Camera) {
     let (max, flash) = (cam.max_zoom, cam.has_flash);
@@ -48,8 +50,28 @@ fn apply_material_you(ui: &MainWindow) {
     t.set_on_surface(rgb(c("system_neutral1_100", "system_neutral1_900", if dark { 0xe6e0e9 } else { 0x1d1b20 })));
 }
 
-fn timestamp_free_name(n: u32) -> String {
-    format!("IMG_{n:05}.jpg")
+static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Next number for IMG_/VID_ names, persisted so names stay unique across launches without timestamps.
+fn next_number(kind: &str) -> u32 {
+    let path = DATA_DIR.get().map(|d| d.join(format!("{kind}_counter")));
+    let n = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0) + 1;
+    if let Some(p) = path {
+        let _ = std::fs::write(p, n.to_string());
+    }
+    n
+}
+
+fn start_recording(cam: &camera::Camera, audio: bool) -> Result<(recorder::Recorder, String), String> {
+    let (w, h) = cam.video_size();
+    let (uri, fd) = jni_util::create_video(&format!("VID_{:05}.mp4", next_number("vid"))).ok_or("Could not create video file")?;
+    match recorder::Recorder::start(fd, w, h, audio) {
+        Ok(r) => Ok((r, uri)),
+        Err(e) => {
+            jni_util::finish_video(&uri, false);
+            Err(e)
+        }
+    }
 }
 
 fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
@@ -69,13 +91,14 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
         }
     };
     publish_caps(&weak, &cam);
+    let mut rec: Option<(recorder::Recorder, String, std::time::Instant)> = None;
+    let mut last_thumb: Option<zanon_camera_core::capture::Frame> = None;
     let mut flash = 0;
     let mut luma = 128u32;
-    let mut counter = 0u32;
     let mut tick = 0u32;
     loop {
         match rx.try_recv() {
-            Ok(Cmd::Flip) => {
+            Ok(Cmd::Flip) if rec.is_none() => {
                 front = !front;
                 drop(cam);
                 cam = match camera::Camera::open(front) {
@@ -88,6 +111,7 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
                 publish_caps(&weak, &cam);
                 cam.set_torch(flash == FLASH_TORCH);
             }
+            Ok(Cmd::Flip) => {}
             Ok(Cmd::Zoom(z)) => {
                 cam.set_zoom(z);
                 let z = cam.zoom();
@@ -96,6 +120,52 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
             Ok(Cmd::Flash(mode)) => {
                 flash = mode;
                 cam.set_torch(flash == FLASH_TORCH);
+            }
+            Ok(Cmd::ToggleRecord) => {
+                if let Some((r, uri, _)) = rec.take() {
+                    let ok = r.finish().is_ok();
+                    jni_util::finish_video(&uri, ok);
+                    if ok {
+                        *LAST_URI.lock().unwrap() = Some((uri, "video/mp4"));
+                    }
+                    if cam.has_flash {
+                        cam.set_torch(flash == FLASH_TORCH);
+                    }
+                    let thumb = last_thumb.take();
+                    let msg = if ok { "Video saved" } else { "Recording failed" };
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_recording(false);
+                        ui.set_toast(msg.into());
+                        if let Some(t) = thumb {
+                            let buf = SharedPixelBuffer::<zanon_camera_ui::Rgb8Pixel>::clone_from_slice(&t.rgb, t.width, t.height);
+                            ui.set_last_photo(slint::Image::from_rgb8(buf));
+                        }
+                    });
+                    std::thread::sleep(Duration::from_millis(1400));
+                    let _ = weak.upgrade_in_event_loop(|ui| ui.set_toast("".into()));
+                } else {
+                    let audio = jni_util::has_permission(jni_util::MICROPHONE);
+                    if !audio {
+                        jni_util::request_permission(jni_util::MICROPHONE);
+                    }
+                    match start_recording(&cam, audio) {
+                        Ok(r) => {
+                            if flash == FLASH_ON {
+                                cam.set_torch(true);
+                            }
+                            rec = Some((r.0, r.1, std::time::Instant::now()));
+                            let _ = weak.upgrade_in_event_loop(|ui| {
+                                ui.set_rec_time("0:00".into());
+                                ui.set_recording(true);
+                            });
+                        }
+                        Err(e) => {
+                            let _ = weak.upgrade_in_event_loop(move |ui| ui.set_toast(e.into()));
+                            std::thread::sleep(Duration::from_millis(1800));
+                            let _ = weak.upgrade_in_event_loop(|ui| ui.set_toast("".into()));
+                        }
+                    }
+                }
             }
             Ok(Cmd::Shutter) => {
                 let fire = flash == FLASH_ON || (flash == FLASH_AUTO && luma < 70);
@@ -107,15 +177,14 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
                 let uri = cam.request_still().ok().and_then(|_| cam.take_still()).and_then(|f| {
                     thumb = f.thumbnail(160).rotated(cam.rotation).ok();
                     let jpeg = encode_jpeg(f, cam.rotation, 92).ok()?;
-                    counter += 1;
-                    jni_util::save_jpeg(&timestamp_free_name(counter), &jpeg)
+                    jni_util::save_jpeg(&format!("IMG_{:05}.jpg", next_number("img")), &jpeg)
                 });
                 if fire {
                     cam.set_torch(flash == FLASH_TORCH);
                 }
                 let saved = uri.is_some();
                 if let Some(u) = uri {
-                    *LAST_URI.lock().unwrap() = Some(u);
+                    *LAST_URI.lock().unwrap() = Some((u, "image/jpeg"));
                 }
                 if let Some(t) = thumb {
                     let buf = SharedPixelBuffer::<zanon_camera_ui::Rgb8Pixel>::clone_from_slice(&t.rgb, t.width, t.height);
@@ -129,8 +198,17 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
             Err(mpsc::TryRecvError::Disconnected) => return,
             Err(mpsc::TryRecvError::Empty) => {}
         }
-        if let Some(frame) = cam.preview_frame() {
+        if let Some((frame, video)) = cam.preview_frame(rec.is_some()) {
             tick += 1;
+            if let (Some((r, _, started)), Some((nv, ts))) = (rec.as_mut(), video) {
+                r.push_video(&nv, ts);
+                if tick % 15 == 0 {
+                    let secs = started.elapsed().as_secs();
+                    let t = format!("{}:{:02}", secs / 60, secs % 60);
+                    let _ = weak.upgrade_in_event_loop(move |ui| ui.set_rec_time(t.into()));
+                    last_thumb = Some(frame.thumbnail(160));
+                }
+            }
             if tick % 6 == 0 {
                 let g = frame.gray();
                 luma = (g.iter().step_by(37).map(|&v| v as u32).sum::<u32>() * 37 / g.len().max(1) as u32).min(255);
@@ -155,6 +233,9 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
 #[no_mangle]
 fn android_main(app: slint::android::AndroidApp) {
     jni_util::set_activity(app.activity_as_ptr());
+    if let Some(d) = app.internal_data_path() {
+        let _ = DATA_DIR.set(d);
+    }
     slint::android::init(app).unwrap();
     let ui = MainWindow::new().unwrap();
     apply_material_you(&ui);
@@ -170,16 +251,19 @@ fn android_main(app: slint::android::AndroidApp) {
     ui.on_flip(move || {
         let _ = tx2.send(Cmd::Flip);
     });
-    let (txz, txf) = (tx3.clone(), tx3);
+    let (txz, txf, txr) = (tx3.clone(), tx3.clone(), tx3);
     ui.on_set_zoom(move |z| {
         let _ = txz.send(Cmd::Zoom(z));
     });
     ui.on_set_flash(move |m| {
         let _ = txf.send(Cmd::Flash(m));
     });
+    ui.on_toggle_record(move || {
+        let _ = txr.send(Cmd::ToggleRecord);
+    });
     ui.on_open_gallery(|| {
-        if let Some(u) = LAST_URI.lock().unwrap().clone() {
-            jni_util::open_in_gallery(&u, "image/jpeg");
+        if let Some((u, mime)) = LAST_URI.lock().unwrap().clone() {
+            jni_util::open_in_gallery(&u, mime);
         }
     });
     let weak = ui.as_weak();
