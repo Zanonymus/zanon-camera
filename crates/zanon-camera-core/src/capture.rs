@@ -97,8 +97,54 @@ mod tests {
     }
 
     #[test]
+    fn yuyv_gray_and_mjpeg() {
+        let f = Frame::from_yuyv(4, 2, &[128; 16]).unwrap();
+        assert_eq!(f.rgb.len(), 24);
+        assert!(f.rgb.iter().all(|&v| (126..=130).contains(&v)));
+        assert_eq!(f.gray().len(), 8);
+        assert!(Frame::from_yuyv(4, 2, &[0; 3]).is_none());
+        let jpg = encode_jpeg(frame(16, 16), Rotation::None, 80).unwrap();
+        assert_eq!(Frame::from_mjpeg(&jpg).unwrap().width, 16);
+    }
+
+    #[test]
     fn rejects_mismatched_frame() {
         let bad = Frame { width: 4, height: 4, rgb: vec![0; 5] };
         assert!(encode_jpeg(bad, Rotation::None, 90).is_err());
+    }
+}
+
+impl Frame {
+    /// Packed YUYV (YUY2) 4:2:2 from a V4L2 webcam to RGB8.
+    pub fn from_yuyv(width: u32, height: u32, yuyv: &[u8]) -> Option<Frame> {
+        if yuyv.len() < (width * height * 2) as usize || width % 2 != 0 {
+            return None;
+        }
+        let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+        let clamp = |v: i32| v.clamp(0, 255) as u8;
+        for px in yuyv[..(width * height * 2) as usize].chunks_exact(4) {
+            let (y0, u, y1, v) = (px[0] as i32, px[1] as i32 - 128, px[2] as i32, px[3] as i32 - 128);
+            for y in [y0, y1] {
+                rgb.push(clamp(y + ((359 * v) >> 8)));
+                rgb.push(clamp(y - ((88 * u + 183 * v) >> 8)));
+                rgb.push(clamp(y + ((454 * u) >> 8)));
+            }
+        }
+        Some(Frame { width, height, rgb })
+    }
+
+    /// One MJPEG frame from a camera, decoded to RGB8 (any metadata in the source is dropped here).
+    pub fn from_mjpeg(data: &[u8]) -> Option<Frame> {
+        let img = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg).ok()?;
+        let rgb = img.to_rgb8();
+        Some(Frame { width: rgb.width(), height: rgb.height(), rgb: rgb.into_raw() })
+    }
+
+    /// 8-bit luma for QR scanning.
+    pub fn gray(&self) -> Vec<u8> {
+        self.rgb
+            .chunks_exact(3)
+            .map(|p| ((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29) >> 8) as u8)
+            .collect()
     }
 }
