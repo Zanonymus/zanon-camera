@@ -8,6 +8,7 @@ build = "build.rs"
 [dependencies]
 zanon-camera-core = { path = "../zanon-camera-core" }
 slint.workspace = true
+v4l = "0.14.0"
 
 [build-dependencies]
 slint-build.workspace = true
