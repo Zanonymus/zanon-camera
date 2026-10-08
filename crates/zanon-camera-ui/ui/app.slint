@@ -67,7 +67,6 @@ export component MainWindow inherits Window {
     in property <float> max-zoom: 1;
     in-out property <float> zoom: 1;
     in-out property <int> flash-mode: 0;
-    property <float> pinch-start: 1;
     callback set-zoom(float);
     callback set-flash(int);
     callback open-gallery();
@@ -86,9 +85,17 @@ export component MainWindow inherits Window {
         height: parent.height;
     }
 
-    ScaleRotateGestureHandler {
-        started => { root.pinch-start = root.zoom; }
-        updated => { root.set-zoom(max(1, min(root.max-zoom, root.pinch-start * self.scale))); }
+    // One-finger drag: up zooms in, down zooms out (Slint gets no multi-touch pinch on Android)
+    TouchArea {
+        property <float> start-zoom: 1;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) { self.start-zoom = root.zoom; }
+        }
+        moved => {
+            if (root.max-zoom > 1) {
+                root.set-zoom(max(1, min(root.max-zoom, self.start-zoom * exp((self.pressed-y - self.mouse-y) / 250px))));
+            }
+        }
     }
 
     if root.preview.width == 0: Text {
