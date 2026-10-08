@@ -36,9 +36,13 @@ fn timestamp_free_name(n: u32) -> String {
 }
 
 fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
+    if !jni_util::has_camera_permission() {
+        let _ = weak.upgrade_in_event_loop(|ui| ui.set_status("Camera access is needed to take photos.\nAllow it in the permission prompt, or in Settings > Apps > Camera.".into()));
+    }
     while !jni_util::has_camera_permission() {
         std::thread::sleep(Duration::from_millis(400));
     }
+    let _ = weak.upgrade_in_event_loop(|ui| ui.set_status("".into()));
     let mut front = false;
     let mut cam = match camera::Camera::open(front) {
         Ok(c) => c,
@@ -101,6 +105,7 @@ fn camera_thread(weak: slint::Weak<MainWindow>, rx: mpsc::Receiver<Cmd>) {
 
 #[no_mangle]
 fn android_main(app: slint::android::AndroidApp) {
+    jni_util::set_activity(app.activity_as_ptr());
     slint::android::init(app).unwrap();
     let ui = MainWindow::new().unwrap();
     apply_material_you(&ui);

@@ -10,10 +10,20 @@ fn with_env<R>(f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<R>) 
     let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
     let r = f(&mut env, &activity);
     if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
         let _ = env.exception_clear();
         return None;
     }
+    if let Err(e) = &r {
+        eprintln!("jni error: {e}");
+    }
     r.ok()
+}
+
+static ACTIVITY: std::sync::atomic::AtomicPtr<std::ffi::c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+pub fn set_activity(ptr: *mut std::ffi::c_void) {
+    ACTIVITY.store(ptr, std::sync::atomic::Ordering::SeqCst);
 }
 
 const CAMERA: &str = "android.permission.CAMERA";
@@ -28,7 +38,9 @@ pub fn has_camera_permission() -> bool {
 }
 
 pub fn request_camera_permission() {
-    with_env(|env, act| {
+    with_env(|env, _app| {
+        let act = unsafe { JObject::from_raw(ACTIVITY.load(std::sync::atomic::Ordering::SeqCst).cast()) };
+        let act = &act;
         let arr = env.new_object_array(1, "java/lang/String", env.new_string(CAMERA)?)?;
         env.call_method(act, "requestPermissions", "([Ljava/lang/String;I)V", &[JValue::Object(&arr), JValue::Int(1)])?;
         Ok(())
