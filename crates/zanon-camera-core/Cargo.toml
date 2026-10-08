@@ -3,3 +3,11 @@ name = "zanon-camera-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+rqrr = "0.11.0"
+
+[dev-dependencies]
+kamadak-exif = "0.6.1"
+qrcode = { version = "0.14.1", default-features = false }
